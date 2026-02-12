@@ -1,5 +1,5 @@
 import { describe, it, expect, vi } from 'vitest';
-import { findTextRange } from './googleDocsApiHelpers.js';
+import { findTextRange, getTableCellRange } from './googleDocsApiHelpers.js';
 
 describe('Text Range Finding', () => {
   describe('findTextRange', () => {
@@ -146,10 +146,10 @@ describe('Text Range Finding', () => {
 
 describe('Table Cell Range Finding', () => {
   // Helper to build a mock document with a table
-  function buildMockDocsWithTable(tableStartIndex, tableRows) {
+  function buildMockDocsWithTable(tableStartIndex: number, tableRows: any[][]) {
     return {
       documents: {
-        get: mock.fn(async () => ({
+        get: vi.fn(async () => ({
           data: {
             body: {
               content: [
@@ -216,9 +216,9 @@ describe('Table Cell Range Finding', () => {
         ],
       ]);
 
-      const result = await getTableCellRange(mockDocs, 'doc123', 14, 0, 0);
+      const result = await getTableCellRange(mockDocs as any, 'doc123', 14, 0, 0);
       // endIndex should exclude the trailing \n (26 - 1 = 25)
-      assert.deepStrictEqual(result, { startIndex: 16, endIndex: 25 });
+      expect(result).toEqual({ startIndex: 16, endIndex: 25 });
     });
 
     it('should return correct range for second column', async () => {
@@ -249,8 +249,8 @@ describe('Table Cell Range Finding', () => {
         ],
       ]);
 
-      const result = await getTableCellRange(mockDocs, 'doc123', 14, 0, 1);
-      assert.deepStrictEqual(result, { startIndex: 28, endIndex: 37 });
+      const result = await getTableCellRange(mockDocs as any, 'doc123', 14, 0, 1);
+      expect(result).toEqual({ startIndex: 28, endIndex: 37 });
     });
 
     it('should throw UserError if table not found at given startIndex', async () => {
@@ -258,13 +258,9 @@ describe('Table Cell Range Finding', () => {
         [{ content: [{ startIndex: 16, endIndex: 20, paragraph: { elements: [] } }] }],
       ]);
 
-      await assert.rejects(
-        () => getTableCellRange(mockDocs, 'doc123', 999, 0, 0),
-        (err) => {
-          assert.ok(err.message.includes('No table found at startIndex 999'));
-          return true;
-        }
-      );
+      await expect(
+        getTableCellRange(mockDocs as any, 'doc123', 999, 0, 0)
+      ).rejects.toThrow('No table found at startIndex 999');
     });
 
     it('should throw UserError if row index is out of range', async () => {
@@ -272,13 +268,9 @@ describe('Table Cell Range Finding', () => {
         [{ content: [{ startIndex: 16, endIndex: 20, paragraph: { elements: [] } }] }],
       ]);
 
-      await assert.rejects(
-        () => getTableCellRange(mockDocs, 'doc123', 14, 5, 0),
-        (err) => {
-          assert.ok(err.message.includes('Row index 5 is out of range'));
-          return true;
-        }
-      );
+      await expect(
+        getTableCellRange(mockDocs as any, 'doc123', 14, 5, 0)
+      ).rejects.toThrow('Row index 5 is out of range');
     });
 
     it('should throw UserError if column index is out of range', async () => {
@@ -286,13 +278,9 @@ describe('Table Cell Range Finding', () => {
         [{ content: [{ startIndex: 16, endIndex: 20, paragraph: { elements: [] } }] }],
       ]);
 
-      await assert.rejects(
-        () => getTableCellRange(mockDocs, 'doc123', 14, 0, 5),
-        (err) => {
-          assert.ok(err.message.includes('Column index 5 is out of range'));
-          return true;
-        }
-      );
+      await expect(
+        getTableCellRange(mockDocs as any, 'doc123', 14, 0, 5)
+      ).rejects.toThrow('Column index 5 is out of range');
     });
 
     it('should handle cell with multiple paragraphs', async () => {
@@ -319,9 +307,9 @@ describe('Table Cell Range Finding', () => {
         ],
       ]);
 
-      const result = await getTableCellRange(mockDocs, 'doc123', 14, 0, 0);
+      const result = await getTableCellRange(mockDocs as any, 'doc123', 14, 0, 0);
       // Should span from first paragraph start to last paragraph end - 1
-      assert.deepStrictEqual(result, { startIndex: 16, endIndex: 35 });
+      expect(result).toEqual({ startIndex: 16, endIndex: 35 });
     });
   });
 });
