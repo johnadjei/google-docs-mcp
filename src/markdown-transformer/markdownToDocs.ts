@@ -74,6 +74,19 @@ interface CodeBlockRange {
   language?: string;
 }
 
+interface TableCellData {
+  text: string;
+  isHeader: boolean;
+  textRanges: { startIndex: number; endIndex: number; formatting: FormattingState }[];
+}
+
+interface TableState {
+  rows: TableCellData[][];
+  currentRow: TableCellData[];
+  inHeader: boolean;
+  currentCell: TableCellData | null;
+}
+
 export interface ConversionOptions {
   /** Treat the first H1 (`# ...`) as a Google Docs TITLE instead of HEADING_1. Default false. */
   firstHeadingAsTitle?: boolean;
@@ -93,6 +106,8 @@ interface ConversionContext {
   openListItemStack: number[];
   hrRanges: { startIndex: number; endIndex: number }[];
   codeBlockRanges: CodeBlockRange[];
+  tableState?: TableState;
+  inTableCell: boolean;
   tabId?: string;
   currentParagraphStart?: number;
   currentHeadingLevel?: number;
@@ -172,6 +187,8 @@ export function convertMarkdownToRequests(
     openListItemStack: [],
     hrRanges: [],
     codeBlockRanges: [],
+    tableState: undefined,
+    inTableCell: false,
     tabId,
     titleConsumed: false,
     firstHeadingAsTitle: options?.firstHeadingAsTitle ?? false,
@@ -277,10 +294,18 @@ function processToken(token: Token, context: ConversionContext): void {
 
     // Breaks
     case 'softbreak':
-      insertText(' ', context);
+      if (context.inTableCell && context.tableState?.currentCell) {
+        context.tableState.currentCell.text += ' ';
+      } else {
+        insertText(' ', context);
+      }
       break;
     case 'hardbreak':
-      insertText('\n', context);
+      if (context.inTableCell && context.tableState?.currentCell) {
+        context.tableState.currentCell.text += '\n';
+      } else {
+        insertText('\n', context);
+      }
       break;
 
     // Inline container
@@ -292,19 +317,54 @@ function processToken(token: Token, context: ConversionContext): void {
       }
       break;
 
-    // Tables (structural tokens we skip through)
+    // Tables
     case 'table_open':
+      context.tableState = { rows: [], currentRow: [], inHeader: false, currentCell: null };
+      break;
+    case 'thead_open':
+      if (context.tableState) context.tableState.inHeader = true;
+      break;
+    case 'thead_close':
+      if (context.tableState) context.tableState.inHeader = false;
+      break;
     case 'tbody_open':
     case 'tbody_close':
-    case 'thead_open':
-    case 'thead_close':
+      break;
     case 'tr_open':
+      if (context.tableState) context.tableState.currentRow = [];
+      break;
     case 'tr_close':
+      if (context.tableState && context.tableState.currentRow.length > 0) {
+        context.tableState.rows.push([...context.tableState.currentRow]);
+        context.tableState.currentRow = [];
+      }
+      break;
     case 'th_open':
+    case 'td_open': {
+      if (context.tableState) {
+        context.tableState.currentCell = {
+          text: '',
+          isHeader: context.tableState.inHeader || token.type === 'th_open',
+          textRanges: [],
+        };
+        context.inTableCell = true;
+      }
+      break;
+    }
     case 'th_close':
-    case 'td_open':
     case 'td_close':
+      if (context.tableState?.currentCell) {
+        context.tableState.currentRow.push(context.tableState.currentCell);
+        context.tableState.currentCell = null;
+      }
+      context.inTableCell = false;
+      break;
     case 'table_close':
+      if (context.tableState) {
+        handleTableClose(context.tableState, context);
+        context.tableState = undefined;
+        context.inTableCell = false;
+      }
       break;
 
     // Code blocks
@@ -481,6 +541,18 @@ function handleTextToken(token: Token, context: ConversionContext): void {
   let text = token.content;
   if (!text) return;
 
+  // Intercept text when inside a table cell — collect into cell buffer
+  if (context.inTableCell && context.tableState?.currentCell) {
+    const cell = context.tableState.currentCell;
+    const startIndex = cell.text.length;
+    cell.text += text;
+    const formatting = mergeFormattingStack(context.formattingStack);
+    if (hasFormatting(formatting)) {
+      cell.textRanges.push({ startIndex, endIndex: cell.text.length, formatting });
+    }
+    return;
+  }
+
   const currentListItem = getCurrentOpenListItem(context);
   if (currentListItem && !currentListItem.taskPrefixProcessed) {
     currentListItem.taskPrefixProcessed = true;
@@ -562,6 +634,129 @@ function handleCodeBlockToken(token: Token, context: ConversionContext): void {
   context.currentIndex = tableStartIndex + EMPTY_1x1_TABLE_SIZE + textLength;
 
   // 5. Ensure a newline after the table for paragraph separation
+  insertText('\n', context);
+}
+
+// --- Table Handler ---
+//
+// Google Docs API table index layout for an R×C table inserted at T:
+//
+//   T          → newline (auto-inserted before table)
+//   T + 1      → table element
+//   T + 2      → row[0]
+//   T + 3      → cell[0][0]
+//   T + 4      → paragraph in cell[0][0]  ← content insertion point
+//   T + 5      → cell[0][1]  (for C > 1)
+//   T + 6      → paragraph in cell[0][1]
+//   ...
+//   T + 2+C    → row[1]  (for R > 1)
+//   ...
+//   T + end    → table end
+//
+// Formulas (verified empirically via CELL_CONTENT_OFFSET and EMPTY_1x1_TABLE_SIZE):
+//   cellContentIndex(T, r, c, C) = T + 4 + r * (1 + 2*C) + 2*c
+//   emptyTableSize(R, C)         = 3 + R * (1 + 2*C)
+
+function handleTableClose(tableState: TableState, context: ConversionContext): void {
+  const rows = tableState.rows;
+  if (rows.length === 0) return;
+
+  const numRows = rows.length;
+  const numCols = rows.reduce((max, row) => Math.max(max, row.length), 0);
+  if (numCols === 0) return;
+
+  // Ensure newline before table
+  if (!lastInsertEndsWithNewline(context)) {
+    insertText('\n', context);
+  }
+
+  const tableStartIndex = context.currentIndex;
+
+  // Insert the table structure
+  const tableLocation: Record<string, unknown> = { index: tableStartIndex };
+  if (context.tabId) tableLocation.tabId = context.tabId;
+
+  context.insertRequests.push({
+    insertTable: {
+      location: tableLocation as docs_v1.Schema$Location,
+      rows: numRows,
+      columns: numCols,
+    },
+  });
+
+  // Insert text into each cell, tracking cumulative offset from prior insertions
+  let cumulativeTextLength = 0;
+
+  for (let r = 0; r < numRows; r++) {
+    for (let c = 0; c < numCols; c++) {
+      const cell = rows[r]?.[c];
+      if (!cell?.text) continue;
+
+      const baseCellIndex = tableStartIndex + 4 + r * (1 + 2 * numCols) + 2 * c;
+      const adjustedIndex = baseCellIndex + cumulativeTextLength;
+
+      const cellLocation: Record<string, unknown> = { index: adjustedIndex };
+      if (context.tabId) cellLocation.tabId = context.tabId;
+
+      context.insertRequests.push({
+        insertText: {
+          location: cellLocation as docs_v1.Schema$Location,
+          text: cell.text,
+        },
+      });
+
+      // Apply inline formatting (bold, italic, links, etc.) from within the cell
+      for (const range of cell.textRanges) {
+        const absStart = adjustedIndex + range.startIndex;
+        const absEnd = adjustedIndex + range.endIndex;
+
+        if (range.formatting.bold || range.formatting.italic ||
+            range.formatting.strikethrough || range.formatting.code) {
+          const styleReq = buildUpdateTextStyleRequest(
+            absStart, absEnd,
+            {
+              bold: range.formatting.bold,
+              italic: range.formatting.italic,
+              strikethrough: range.formatting.strikethrough,
+              fontFamily: range.formatting.code ? CODE_FONT_FAMILY : undefined,
+              foregroundColor: range.formatting.code ? CODE_TEXT_HEX : undefined,
+              backgroundColor: range.formatting.code ? CODE_BACKGROUND_HEX : undefined,
+            },
+            context.tabId
+          );
+          if (styleReq) context.formatRequests.push(styleReq.request);
+        }
+
+        if (range.formatting.link) {
+          const linkReq = buildUpdateTextStyleRequest(
+            absStart, absEnd,
+            { linkUrl: range.formatting.link },
+            context.tabId
+          );
+          if (linkReq) context.formatRequests.push(linkReq.request);
+        }
+      }
+
+      // Bold all text in header cells
+      if (cell.isHeader && cell.text.length > 0) {
+        const headerStyleReq = buildUpdateTextStyleRequest(
+          adjustedIndex,
+          adjustedIndex + cell.text.length,
+          { bold: true },
+          context.tabId
+        );
+        if (headerStyleReq) context.formatRequests.push(headerStyleReq.request);
+      }
+
+      cumulativeTextLength += cell.text.length;
+    }
+  }
+
+  // Advance currentIndex past the full table (empty structure + all inserted text)
+  const emptyTableSize = 3 + numRows * (1 + 2 * numCols);
+  context.currentIndex = tableStartIndex + emptyTableSize + cumulativeTextLength;
+
+  // Ensure newline after table
   insertText('\n', context);
 }
 
