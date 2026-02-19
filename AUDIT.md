@@ -16,12 +16,14 @@ There are some minor security observations (not malicious, but worth awareness) 
 
 ## Methodology
 
-### Step 1: Manual Full-Read of Every Source File
+### Step 1: Manual Full-Read of Source Files
 
-Every file listed in the "File-by-File Analysis" section below was **opened and read in its entirety, line by line**. This was not a sampling or summary — the complete contents of each file were reviewed by the auditor. The following files were fully read:
+The audit was conducted in two passes. The first pass (the initial audit) read all production source code files. A second verification pass was done later to cover test files and minor config files that were missed in the first pass. Both passes are documented below for full transparency.
+
+#### First pass — read during initial audit:
 
 **Core source files (read completely):**
-- `package.json`, `package-lock.json` (dependency manifest)
+- `package.json` (dependency manifest)
 - `src/index.ts` (entry point)
 - `src/auth.ts` (authentication)
 - `src/clients.ts` (API client initialization)
@@ -92,24 +94,31 @@ Every file listed in the "File-by-File Analysis" section below was **opened and 
 - `src/backup/auth.ts.bak`
 - `src/backup/server.ts.bak`
 
-**Configuration and CI files (read completely):**
+**Configuration and CI files (read completely during first pass):**
 - `tsconfig.json`
 - `vitest.config.ts`
 - `.gitignore`
-- `.prettierrc`, `.prettierignore`
-- `.vscode/settings.json`, `.vscode/extensions.json`
-- `.repomix/bundles.json`
 - `.github/workflows/ci.yml`
 - `.github/workflows/release.yml`
 
 **Documentation (read completely):**
 - `docs/index.html`
 
-**Test files (read completely):**
-- `src/types.test.ts`
-- `src/googleDocsApiHelpers.test.ts`
+#### Second pass — read during verification review:
 
-**Files not read (non-code assets):**
+These files were not read during the initial audit and were read in a follow-up verification pass:
+
+- `src/types.test.ts` (unit tests for color validation/conversion)
+- `src/googleDocsApiHelpers.test.ts` (unit tests for text range finding, paragraph range, table cell range)
+- `.prettierrc` (Prettier config — standard formatting settings)
+- `.prettierignore` (Prettier ignore — excludes node_modules, dist, minified JS, HTML, lockfile)
+- `.vscode/settings.json` (VSCode settings — Prettier as default formatter, format on save)
+- `.vscode/extensions.json` (VSCode extensions — recommends Prettier extension only)
+- `.repomix/bundles.json` (Repomix config — empty bundles object)
+
+All seven files are clean with no security concerns.
+
+#### Files not read (non-code assets):
 - `assets/google.docs.mcp.1.gif` (binary image)
 - `google docs mcp.mp4` (binary video)
 - `package-lock.json` (auto-generated lockfile — too large, dependencies verified via `package.json`)
