@@ -22,7 +22,6 @@ export function registerDriveTools(server: FastMCP) {
   moveFile(server);
   copyFile(server);
   renameFile(server);
-  deleteFile(server);
   createDocument(server);
   createFromTemplate(server);
 }
